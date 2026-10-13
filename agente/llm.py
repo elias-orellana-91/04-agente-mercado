@@ -37,7 +37,7 @@ class LLMBackend(Protocol):
 _OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\|$)", re.DOTALL)  # OSC: título de ventana, hipervínculos...
 _CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")  # CSI: colores, movimiento del cursor...
 _ESC2 = re.compile(r"\x1b[ -/]*[0-~]")  # resto de secuencias ESC (reset 'ESC c', selección de charset...)
-_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f​-‏ -‮⁦-⁩﻿]")
+_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff]")
 
 
 def sanitize_llm_output(text: str, limit: int = 4000) -> str:

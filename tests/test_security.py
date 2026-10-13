@@ -138,7 +138,7 @@ def test_s8_unknown_metric_period_and_odd_types_are_sanitized(build):
 
 
 def test_clean_strips_bidi_and_unicode_line_separators():
-    assert clean("a‮b c​d\x1be") == "a b c d e"
+    assert clean("a\u202eb\u2028c\u200bd\x1be") == "a b c d e"
 
 
 # --- S4 -----------------------------------------------------------------------------------------------
@@ -232,3 +232,74 @@ def test_s7_dependabot_file_exists():
     text = (pathlib.Path(__file__).parents[1] / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     assert "pip" in text and "github-actions" in text
     assert Agent and Tools  # imports usados
+
+
+# --- Fix ciclo 3 --------------------------------------------------------------------------------------
+def _gzip_bomb(total=10**9):
+    """~1 MB de gzip que descomprime a ``total`` bytes (se genera por trozos: no ocupa memoria)."""
+    import zlib
+
+    comp = zlib.compressobj(9, zlib.DEFLATED, 31)
+    out, zeros = [], b"\0" * 10_000_000
+    for _ in range(total // len(zeros)):
+        out.append(comp.compress(zeros))
+    out.append(comp.flush())
+    return b"".join(out)
+
+
+def test_b1_gzip_bomb_rejected_fast_with_bounded_memory():
+    import time
+    import tracemalloc
+
+    bomb = _gzip_bomb()
+    assert len(bomb) < 2_000_000
+    seen = []
+    stream = CountingStream(chunk=bomb)  # httpx.Response(content=...) descomprime en su constructor: se usa un stream perezoso
+    client = client_for(lambda r: (seen.append(r.headers.get("accept-encoding")),
+                                   httpx.Response(200, headers={"content-encoding": "gzip"}, stream=stream))[1])
+    tracemalloc.start()
+    t0 = time.monotonic()
+    with pytest.raises(ToolError) as e:
+        client.get("/tickers")
+    elapsed = time.monotonic() - t0
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert e.value.code == "unexpected_response" and "codificación" in e.value.message
+    assert elapsed < 2 and peak < 20_000_000
+    assert seen[0] == "identity" and stream.chunks == 0  # ni siquiera se empezó a leer/descomprimir
+
+
+@pytest.mark.parametrize("enc", ["gzip", "deflate", "br", "GZIP", "identity, gzip"])
+def test_b1_any_content_encoding_rejected_including_errors(enc):
+    client = client_for(lambda r: httpx.Response(500, headers={"content-encoding": enc}, content=b"x"), retries=0)
+    with pytest.raises(ToolError) as e:
+        client.get("/x")
+    assert e.value.code == "unexpected_response"
+
+
+def test_b1_identity_encoding_accepted():
+    client = client_for(lambda r: httpx.Response(200, headers={"content-encoding": "identity"}, json=[1]))
+    assert client.get("/x") == [1]
+
+
+def test_b2_no_invisible_literals_in_repo():
+    import pathlib
+    import re
+
+    bad = re.compile("[\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff]")
+    root = pathlib.Path(__file__).parents[1]
+    for p in list(root.glob("agente/*.py")) + list(root.glob("tests/*.py")) + [root / "README.md"]:
+        assert not bad.search(p.read_text(encoding="utf-8")), p
+    assert clean("a\u2060b\u061cc\u2064d") == "a b c d"
+
+
+def test_cosmetic_null_and_lists_show_nd_not_none(build):
+    ranking = {"period": "month", "metric": ["return"], "order": "desc", "start": "a", "end": [None],
+               "items": [{"rank": 1, "ticker": None, "name": [None], "sector": None, "value": 0.1}]}
+    sectors = {"start": "a", "end": "b", "sectors": [{"sector": None, "best_ticker": [None], "worst_ticker": None,
+                                                         "total_return": 0.1}]}
+    agent, _, _ = build({"/ranking": httpx.Response(200, json=ranking), "/sectors/summary": httpx.Response(200, json=sectors)})
+    for q in ("mejor acción del mes", "resumen por sector"):
+        out = agent.answer(q).text
+        assert "None" not in out and "[" not in out and "n/d" in out, out
+    assert clean(None) == "n/d" and clean([None]) == "n/d" and clean({"a": 1}) == "n/d"

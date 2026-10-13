@@ -48,7 +48,8 @@ class P3Client:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         validate_url("P3_BASE_URL", settings.p3_base_url)
-        headers = {"Accept": "application/json", "User-Agent": "agente-mercado/0.1"}
+        # identity: sin compresión no hay bomba de descompresión (el límite de 2 MB se mide sobre bytes reales)
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity", "User-Agent": "agente-mercado/0.1"}
         if settings.p3_api_key:
             headers["X-API-Key"] = settings.p3_api_key
         # follow_redirects=False (por defecto): la clave nunca viaja a otro host
@@ -84,12 +85,14 @@ class P3Client:
                 last = self._error_from(status, headers, content)
                 continue
             return self._parse(status, headers, content)
-        assert last is not None
-        raise last
+        raise last or ToolError("api_unavailable", "No pude conectar con la API de mercado (¿está caída?).")
 
     def _fetch(self, path: str, params: dict | None, deadline: float) -> tuple[int, httpx.Headers, bytes]:
         """Lee la respuesta por trozos: aborta al pasar MAX_BODY_BYTES o el plazo total, sin leer el resto."""
         with self._http.stream("GET", path, params=params) as resp:
+            # Si el servidor comprime pese a Accept-Encoding: identity, se rechaza ANTES de leer/descomprimir nada
+            if resp.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+                raise ToolError("unexpected_response", "Respuesta inesperada de la API (codificación no soportada).")
             declared = resp.headers.get("content-length", "")
             if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
                 raise _too_large()

@@ -10,11 +10,16 @@ DISCLAIMER = (
 PERIOD_ES = {"month": "del mes", "quarter": "del trimestre", "ytd": "del año en curso", "custom": "del periodo"}
 METRIC_ES = {"return": "retorno", "volatility": "volatilidad anualizada", "sharpe": "Sharpe"}
 # Controles C0/C1 (incluye ESC), separadores de línea Unicode y marcas bidireccionales/invisibles
-_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩﻿]")
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff]")
 
 
 def clean(value, n: int = 80) -> str:
-    """Texto externo → una línea sin caracteres de control y con largo acotado."""
+    """Texto externo → una línea sin caracteres de control y con largo acotado.
+
+    ``None`` y las estructuras (listas, dicts) no son texto: se muestran como 'n/d', nunca como 'None' o '[None]'.
+    """
+    if value is None or isinstance(value, list | tuple | dict | set):
+        return "n/d"
     return _CTRL.sub(" ", str(value)).strip()[:n]
 
 
@@ -27,7 +32,7 @@ def label(table: dict[str, str], key, default: str = "", n: int = 40) -> str:
     """Traducción desde una tabla cerrada; si la clave de la API no está, se muestra saneada."""
     if isinstance(key, str) and key in table:
         return table[key]
-    return clean(key, n) if key is not None else default
+    return clean(key, n)
 
 
 def num(x, d: int = 2) -> str:
