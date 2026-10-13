@@ -81,10 +81,10 @@ def test_retries_503_then_succeeds(build):
 
     def flaky(_):
         state["n"] += 1
-        return err(503, "database_unavailable", "x") if state["n"] < 3 else httpx.Response(200, json={"sectors": []})
+        return err(503, "database_unavailable", "x") if state["n"] < 3 else httpx.Response(200, json={"start": "a", "end": "b", "sectors": []})
 
     _, tools, _ = build({"/sectors/summary": flaky})
-    assert tools.sectors_summary() == {"sectors": []} and state["n"] == 3
+    assert tools.sectors_summary()["sectors"] == [] and state["n"] == 3
 
 
 def test_retries_are_bounded(build):
@@ -147,3 +147,32 @@ def test_api_key_sent_only_when_set_and_not_in_repr():
 def test_bad_base_url():
     with pytest.raises(ValueError):
         P3Client(Settings(p3_base_url="file:///etc"))
+
+
+@pytest.mark.parametrize("path,call", [
+    ("/predictions/NVDA", lambda t: t.predict_volatility("NVDA")),
+    ("/model/info", lambda t: t.model_info()),
+    ("/metrics/AAPL", lambda t: t.metrics("AAPL")),
+    ("/prices/AAPL", lambda t: t.prices("AAPL")),
+    ("/sectors/summary", lambda t: t.sectors_summary()),
+    ("/ranking", lambda t: t.ranking()),
+])
+@pytest.mark.parametrize("payload", [{}, [], None, {"unexpected": 1}, "texto"])
+def test_unexpected_200_bodies_become_tool_error(build, path, call, payload):
+    _, tools, _ = build({path: httpx.Response(200, json=payload)})
+    with pytest.raises(ToolError) as e:
+        call(tools)
+    assert e.value.code == "unexpected_response"
+
+
+def test_unexpected_body_message_through_agent(build):
+    agent, _, _ = build({"/predictions/NVDA": httpx.Response(200, json={})})
+    out = agent.answer("predicción NVDA")
+    assert not out.ok and "Respuesta inesperada de la API" in out.text and "None" not in out.text
+
+
+def test_ranking_items_must_be_list_of_objects(build):
+    bad = {"period": "month", "metric": "return", "order": "desc", "start": "a", "end": "b", "items": [1, 2]}
+    _, tools, _ = build({"/ranking": httpx.Response(200, json=bad)})
+    with pytest.raises(ToolError):
+        tools.ranking()

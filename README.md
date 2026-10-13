@@ -45,6 +45,8 @@ python -m agente                                   # modo interactivo ('salir' p
 
 Preguntas que entiende: mejor/peor acción del mes, trimestre o año; la más/menos volátil; mejor Sharpe; predicción de volatilidad de un símbolo; resumen por sector; precio y métricas de uno a tres símbolos; lista de acciones; datos del modelo.
 
+**Códigos de salida** (modo de una sola pregunta): `0` respondida; `1` la consulta no se pudo responder (error de API o red, pregunta vacía, demasiado larga o no entendida, símbolo desconocido); `2` configuración o uso incorrecto (p. ej. `P3_TIMEOUT=abc`, backend mal configurado, argumentos inválidos). El modo interactivo termina siempre con `0`. Rangos de configuración: `P3_TIMEOUT` 0,1–120 s, `P3_RETRIES` 0–5.
+
 ### Backends
 
 | Backend | Qué hace | Requisitos |

@@ -94,10 +94,12 @@ class P3Client:
             raise self._error_from(resp)
         if len(resp.content) > MAX_BODY_BYTES:
             raise ToolError("response_too_large", "La API devolvió una respuesta demasiado grande.")
+        if not resp.content.strip():
+            raise ToolError("unexpected_response", "Respuesta inesperada de la API (cuerpo vacío).")
         try:
             data = resp.json()
         except ValueError:
             raise ToolError("bad_response", "La API devolvió una respuesta que no es JSON.") from None
         if not isinstance(data, dict | list):
-            raise ToolError("bad_response", "La API devolvió una respuesta inesperada.")
+            raise ToolError("unexpected_response", "Respuesta inesperada de la API (formato no válido).")
         return data

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from agente import formatting as F
 from agente.client import P3Client, ToolError
@@ -11,6 +12,13 @@ from agente.router import Plan, plan
 from agente.tools import Tools
 
 log = logging.getLogger("agente")
+IN_SAMPLE_MARK = "muestra de entrenamiento"
+
+
+@dataclass(frozen=True)
+class Answer:
+    text: str
+    ok: bool  # False si la consulta no se pudo responder (error de API/red, pregunta inválida o no entendida)
 
 
 class Agent:
@@ -25,29 +33,43 @@ class Agent:
         return cls(Tools(P3Client(settings)), backend or make_backend(settings))
 
     def ask(self, question: str) -> str:
+        return self.answer(question).text
+
+    def answer(self, question: str) -> Answer:
         question = (question or "").strip()
         if not question:
-            return "Escribe una pregunta sobre el mercado."
+            return Answer("Escribe una pregunta sobre el mercado.", False)
         if len(question) > MAX_QUESTION_LEN:
-            return f"La pregunta es demasiado larga (máximo {MAX_QUESTION_LEN} caracteres)."
+            return Answer(f"La pregunta es demasiado larga (máximo {MAX_QUESTION_LEN} caracteres).", False)
         try:
             p = plan(question, self.tools)
             if p.intent in ("clarify", "help"):
-                return p.message
+                return Answer(p.message, False)
             facts = self._run(p)
         except ToolError as err:
-            return F.error_text(err)
-        except Exception:  # noqa: BLE001 - el usuario nunca ve un stack trace
-            log.exception("Fallo inesperado del agente")
-            return "Ocurrió un error inesperado al procesar la pregunta."
+            log.warning("consulta fallida: código=%s", err.code)
+            return Answer(F.error_text(err), False)
+        except Exception as exc:  # noqa: BLE001 - el usuario nunca ve un stack trace
+            log.error("fallo inesperado del agente: %s", type(exc).__name__)
+            return Answer("Ocurrió un error inesperado al procesar la pregunta.", False)
         text = facts
         if not isinstance(self.backend, RulesBackend):
             try:
                 text = self.backend.narrate(question, facts)
             except LLMError as err:
-                log.warning("Backend %s falló: %s", self.backend.name, err)
+                log.warning("backend %s falló: %s", self.backend.name, err)
                 text = facts + f"\n(No pude usar el backend '{self.backend.name}'; muestro la respuesta base.)"
-        return f"{text}\n\n{F.DISCLAIMER}"
+            else:
+                text = self._keep_in_sample_warning(facts, text)
+        return Answer(f"{text}\n\n{F.DISCLAIMER}", True)
+
+    @staticmethod
+    def _keep_in_sample_warning(facts: str, text: str) -> str:
+        """Si los hechos traen la advertencia in_sample y el LLM no la conservó, se anexa tal cual."""
+        if IN_SAMPLE_MARK in text:
+            return text
+        warnings = [ln for ln in facts.splitlines() if ln.startswith("Atención:") and IN_SAMPLE_MARK in ln]
+        return text + "\n" + "\n".join(warnings) if warnings else text
 
     def _run(self, p: Plan) -> str:
         t = self.tools

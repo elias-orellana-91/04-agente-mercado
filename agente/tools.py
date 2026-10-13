@@ -25,6 +25,15 @@ def _iso(value: str | None, name: str) -> str | None:
         raise ToolError("invalid_argument", f"'{name}' debe ser una fecha YYYY-MM-DD.") from None
 
 
+def _expect(data, keys: tuple[str, ...], lists: tuple[str, ...] = ()) -> dict:
+    """Comprueba que la respuesta sea un objeto con los campos esperados (y listas de objetos donde toca)."""
+    ok = isinstance(data, dict) and all(data.get(k) is not None for k in keys)
+    ok = ok and all(isinstance(data.get(k), list) and all(isinstance(i, dict) for i in data[k]) for k in lists)
+    if not ok:
+        raise ToolError("unexpected_response", "Respuesta inesperada de la API (faltan campos esperados).")
+    return data
+
+
 class Tools:
     def __init__(self, client: P3Client) -> None:
         self.client = client
@@ -58,29 +67,33 @@ class Tools:
             raise ToolError("invalid_argument", "order debe ser 'asc' o 'desc'.")
         params = {"start": _iso(start, "start"), "end": _iso(end, "end"), "limit": max(1, min(int(limit), 500)),
                   "order": order}
-        return self.client.get(f"/prices/{sym}", {k: v for k, v in params.items() if v is not None})
+        data = self.client.get(f"/prices/{sym}", {k: v for k, v in params.items() if v is not None})
+        return _expect(data, ("ticker",), ("items",))
 
     def metrics(self, symbol: str, start: str | None = None, end: str | None = None) -> dict:
         sym = self.validate_symbol(symbol)
         params = {"start": _iso(start, "start"), "end": _iso(end, "end")}
-        return self.client.get(f"/metrics/{sym}", {k: v for k, v in params.items() if v is not None})
+        data = self.client.get(f"/metrics/{sym}", {k: v for k, v in params.items() if v is not None})
+        return _expect(data, ("ticker", "start", "end", "total_return", "volatility", "max_drawdown"))
 
     def ranking(self, period: str = "month", metric: str = "return", order: str = "desc", limit: int = 5) -> dict:
         if period not in PERIODS or metric not in METRICS or order not in ORDERS:
             raise ToolError("invalid_argument", "Parámetros de ranking inválidos.")
         params = {"period": period, "metric": metric, "order": order, "limit": max(1, min(int(limit), 100))}
-        return self.client.get("/ranking", params)
+        return _expect(self.client.get("/ranking", params), ("period", "metric", "order", "start", "end"), ("items",))
 
     def sectors_summary(self, start: str | None = None, end: str | None = None) -> dict:
         params = {"start": _iso(start, "start"), "end": _iso(end, "end")}
-        return self.client.get("/sectors/summary", {k: v for k, v in params.items() if v is not None})
+        data = self.client.get("/sectors/summary", {k: v for k, v in params.items() if v is not None})
+        return _expect(data, ("start", "end"), ("sectors",))
 
     # --- modelo ---------------------------------------------------------------------------------------
     def predict_volatility(self, symbol: str, on_date: str | None = None) -> dict:
         """Probabilidad de volatilidad alta a 5 días hábiles. Incluye ``in_sample`` (ver P3)."""
         sym = self.validate_symbol(symbol)
         params = {"date": _iso(on_date, "date")}
-        return self.client.get(f"/predictions/{sym}", {k: v for k, v in params.items() if v is not None})
+        data = self.client.get(f"/predictions/{sym}", {k: v for k, v in params.items() if v is not None})
+        return _expect(data, ("ticker", "as_of_date", "probability_high_vol", "decision_threshold", "label"))
 
     def model_info(self) -> dict:
-        return self.client.get("/model/info")
+        return _expect(self.client.get("/model/info"), ("model_name", "model_version", "test_metrics"))

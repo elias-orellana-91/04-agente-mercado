@@ -71,3 +71,32 @@ def test_claude_missing_package(monkeypatch):
     monkeypatch.setitem(sys.modules, "anthropic", None)  # fuerza ImportError
     with pytest.raises(LLMError, match="anthropic"):
         ClaudeBackend(Settings(backend="claude"))
+
+
+def _in_sample_prediction(req):
+    return httpx.Response(200, json={"ticker": "NVDA", "as_of_date": "2020-01-02", "horizon_days": 5,
+                                     "probability_high_vol": 0.3, "predicted_class": 0, "label": "normal",
+                                     "decision_threshold": 0.5, "model_version": "0.1.0", "in_sample": True,
+                                     "created_at": "x"})
+
+
+def _ollama(text):
+    return OllamaBackend(Settings(), transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"message": {"content": text}})))
+
+
+def test_llm_that_drops_in_sample_warning_gets_it_appended(build):
+    agent, _, _ = build({"/predictions/NVDA": _in_sample_prediction}, backend=_ollama("NVDA tiene 30 % de probabilidad."))
+    out = agent.ask("predicción de NVDA")
+    assert out.startswith("NVDA tiene 30 %") and "muestra de entrenamiento" in out
+
+
+def test_llm_that_keeps_warning_is_not_duplicated(build):
+    agent, _, _ = build({"/predictions/NVDA": _in_sample_prediction},
+                        backend=_ollama("Ojo: dentro de la muestra de entrenamiento."))
+    assert agent.ask("predicción de NVDA").count("muestra de entrenamiento") == 1
+
+
+def test_no_warning_appended_when_not_in_sample(build):
+    agent, _, _ = build(backend=_ollama("Listo."))
+    assert "muestra de entrenamiento" not in agent.ask("predicción de NVDA")
