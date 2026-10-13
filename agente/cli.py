@@ -13,14 +13,25 @@ from dataclasses import replace
 
 from agente.agent import Agent
 from agente.config import Settings
+from agente.formatting import clean
 from agente.llm import LLMError
+
+
+class SafeFormatter(logging.Formatter):
+    """Una línea por registro: sin saltos de línea ni caracteres de control (ESC, CR...) en el mensaje."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.exc_info = record.exc_text = None  # nunca tracebacks en la salida
+        return clean(super().format(record), 500)
 
 
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(SafeFormatter("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
     ap = argparse.ArgumentParser(prog="agente", description="Agente analista de mercado (consume la API P3).")
     ap.add_argument("pregunta", nargs="*", help="Pregunta en español; sin ella se abre el modo interactivo.")
     ap.add_argument("--backend", choices=["rules", "ollama", "claude"], help="Por defecto AGENTE_BACKEND o 'rules'.")

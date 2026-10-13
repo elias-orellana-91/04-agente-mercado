@@ -4,10 +4,28 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 MAX_QUESTION_LEN = 500
 MAX_TIMEOUT = 120.0
 MAX_RETRIES = 5
+MAX_TOTAL_TIMEOUT = 300.0
+
+
+def validate_url(name: str, url: str) -> str:
+    """URL http(s) sin credenciales incrustadas ni espacios/caracteres de control (CR, LF, ESC...)."""
+    if any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        raise ValueError(f"{name} contiene espacios o caracteres de control.")
+    try:
+        parsed = urlparse(url)
+        parsed.port  # noqa: B018 - fuerza la validación del puerto
+    except ValueError:
+        raise ValueError(f"{name} no es una URL válida.") from None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"{name} debe ser una URL http(s) válida.")
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        raise ValueError(f"{name} no debe incluir credenciales.")
+    return url
 
 
 def _number(name: str, raw, kind, lo, hi):
@@ -25,7 +43,8 @@ def _number(name: str, raw, kind, lo, hi):
 class Settings:
     p3_base_url: str = "http://127.0.0.1:8000"
     p3_api_key: str | None = field(default=None, repr=False)  # nunca se imprime ni se loguea
-    timeout: float = 10.0
+    timeout: float = 10.0  # por operación de red (conexión/lectura de cada trozo)
+    total_timeout: float = 30.0  # plazo total de una consulta a P3 (incluye lectura del cuerpo y reintentos)
     retries: int = 2  # reintentos extra (3 intentos en total) solo para fallos transitorios
     backend: str = "rules"
     ollama_url: str = "http://127.0.0.1:11434"
@@ -37,12 +56,14 @@ class Settings:
         """Lee el entorno; valores inválidos → ``ValueError`` con un mensaje apto para el usuario."""
         e = os.environ if env is None else env
         return cls(
-            p3_base_url=e.get("P3_BASE_URL", cls.p3_base_url).strip().rstrip("/"),
+            p3_base_url=validate_url("P3_BASE_URL", e.get("P3_BASE_URL", cls.p3_base_url).strip().rstrip("/")),
             p3_api_key=e.get("P3_API_KEY") or None,
             timeout=_number("P3_TIMEOUT", e.get("P3_TIMEOUT", cls.timeout), float, 0.1, MAX_TIMEOUT),
+            total_timeout=_number("P3_TOTAL_TIMEOUT", e.get("P3_TOTAL_TIMEOUT", cls.total_timeout), float, 1,
+                                  MAX_TOTAL_TIMEOUT),
             retries=_number("P3_RETRIES", e.get("P3_RETRIES", cls.retries), int, 0, MAX_RETRIES),
             backend=e.get("AGENTE_BACKEND", cls.backend).strip().lower(),
-            ollama_url=e.get("OLLAMA_URL", cls.ollama_url).strip().rstrip("/"),
+            ollama_url=validate_url("OLLAMA_URL", e.get("OLLAMA_URL", cls.ollama_url).strip().rstrip("/")),
             ollama_model=e.get("OLLAMA_MODEL", cls.ollama_model),
             claude_model=e.get("AGENTE_CLAUDE_MODEL", cls.claude_model),
         )

@@ -7,11 +7,12 @@ URLs, y si falla el agente vuelve a la plantilla.
 from __future__ import annotations
 
 import os
+import re
 from typing import Protocol
 
 import httpx
 
-from agente.config import Settings
+from agente.config import Settings, validate_url
 
 SYSTEM_PROMPT = (
     "Eres un asistente de análisis de mercado. Responde en español, breve y claro, usando SOLO los hechos "
@@ -31,6 +32,21 @@ class LLMBackend(Protocol):
     def narrate(self, question: str, facts: str) -> str:
         """Devuelve la respuesta redactada a partir de ``facts`` (ya obtenidos de P3)."""
         ...
+
+
+_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\|$)", re.DOTALL)  # OSC: título de ventana, hipervínculos...
+_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")  # CSI: colores, movimiento del cursor...
+_ESC2 = re.compile(r"\x1b[ -/]*[0-~]")  # resto de secuencias ESC (reset 'ESC c', selección de charset...)
+_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f​-‏ -‮⁦-⁩﻿]")
+
+
+def sanitize_llm_output(text: str, limit: int = 4000) -> str:
+    """Salida del LLM como dato: sin secuencias ANSI/OSC ni caracteres de control (se conserva \\n)."""
+    text = _OSC.sub("", text)
+    text = _CSI.sub("", text)
+    text = _ESC2.sub("", text)
+    text = _CONTROL.sub("", text)
+    return text.strip()[:limit]
 
 
 class RulesBackend:
@@ -53,6 +69,7 @@ class OllamaBackend:
     name = "ollama"
 
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
+        validate_url("OLLAMA_URL", settings.ollama_url)
         self._http = httpx.Client(base_url=settings.ollama_url, timeout=60.0, transport=transport)
         self._model = settings.ollama_model
 
@@ -73,7 +90,7 @@ class OllamaBackend:
             raise LLMError(f"Ollama no respondió correctamente ({type(exc).__name__}).") from None
         if not isinstance(text, str) or not text.strip():
             raise LLMError("Ollama devolvió una respuesta vacía.")
-        return text.strip()[:4000]
+        return sanitize_llm_output(text)
 
 
 class ClaudeBackend:
@@ -104,7 +121,7 @@ class ClaudeBackend:
             raise LLMError(f"Claude no respondió correctamente ({type(exc).__name__}).") from None
         if not text.strip():
             raise LLMError("Claude devolvió una respuesta vacía.")
-        return text.strip()[:4000]
+        return sanitize_llm_output(text)
 
 
 def make_backend(settings: Settings) -> LLMBackend:
