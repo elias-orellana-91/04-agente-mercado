@@ -1,0 +1,44 @@
+"""CLI: ``python -m agente "pregunta"`` o modo interactivo (sin argumentos)."""
+from __future__ import annotations
+
+import argparse
+import sys
+
+from agente.agent import Agent
+from agente.config import Settings
+from agente.llm import LLMError
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser(prog="agente", description="Agente analista de mercado (consume la API P3).")
+    ap.add_argument("pregunta", nargs="*", help="Pregunta en español; sin ella se abre el modo interactivo.")
+    ap.add_argument("--backend", choices=["rules", "ollama", "claude"], help="Por defecto AGENTE_BACKEND o 'rules'.")
+    ap.add_argument("--base-url", help="URL de P3 (por defecto P3_BASE_URL o http://127.0.0.1:8000).")
+    args = ap.parse_args(argv)
+
+    base = Settings.from_env()
+    overrides = {k: v for k, v in {"backend": args.backend, "p3_base_url": args.base_url and args.base_url.rstrip("/")}.items() if v}
+    settings = Settings(**{**base.__dict__, **overrides})
+    try:
+        agent = Agent.from_settings(settings)
+    except (LLMError, ValueError) as err:
+        print(f"Error de configuración: {err}", file=sys.stderr)
+        return 2
+
+    if args.pregunta:
+        print(agent.ask(" ".join(args.pregunta)))
+        return 0
+    print("Agente de mercado (escribe 'salir' para terminar).")
+    while True:
+        try:
+            q = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if q.lower() in ("salir", "exit", "quit"):
+            return 0
+        if q:
+            print(agent.ask(q), end="\n\n")
