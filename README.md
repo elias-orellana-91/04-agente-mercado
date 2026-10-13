@@ -21,7 +21,7 @@ flowchart LR
 
 | Módulo | Responsabilidad |
 |---|---|
-| `agente/client.py` | Cliente de P3: timeouts, hasta 2 reintentos (solo red/timeout y 502-504), errores `{"error":{code,message,details,request_id}}` convertidos a `ToolError` |
+| `agente/client.py` | Cliente de P3: lectura en streaming con tope de 2 MB, timeout por operación y plazo total, hasta 2 reintentos (solo red/timeout y 502-504), errores `{"error":{code,message,details,request_id}}` convertidos a `ToolError` |
 | `agente/tools.py` | Una herramienta por endpoint: tickers, precios, métricas, ranking, sectores, predicción de volatilidad, info del modelo |
 | `agente/router.py` | Enruta la pregunta a una herramienta (sin LLM) |
 | `agente/formatting.py` | Plantillas en español; sanea el texto que viene de la API |
@@ -45,7 +45,7 @@ python -m agente                                   # modo interactivo ('salir' p
 
 Preguntas que entiende: mejor/peor acción del mes, trimestre o año; la más/menos volátil; mejor Sharpe; predicción de volatilidad de un símbolo; resumen por sector; precio y métricas de uno a tres símbolos; lista de acciones; datos del modelo.
 
-**Códigos de salida** (modo de una sola pregunta): `0` respondida; `1` la consulta no se pudo responder (error de API o red, pregunta vacía, demasiado larga o no entendida, símbolo desconocido); `2` configuración o uso incorrecto (p. ej. `P3_TIMEOUT=abc`, backend mal configurado, argumentos inválidos). El modo interactivo termina siempre con `0`. Rangos de configuración: `P3_TIMEOUT` 0,1–120 s, `P3_RETRIES` 0–5.
+**Códigos de salida** (modo de una sola pregunta): `0` respondida; `1` la consulta no se pudo responder (error de API o red, pregunta vacía, demasiado larga o no entendida, símbolo desconocido); `2` configuración o uso incorrecto (p. ej. `P3_TIMEOUT=abc`, backend mal configurado, argumentos inválidos). El modo interactivo termina siempre con `0`. Rangos de configuración: `P3_TIMEOUT` 0,1–120 s (por operación de red), `P3_TOTAL_TIMEOUT` 1–300 s (plazo total de una consulta, por defecto 30), `P3_RETRIES` 0–5. `P3_BASE_URL` y `OLLAMA_URL` deben ser http(s) sin credenciales incrustadas, espacios ni caracteres de control; si no, error de configuración (código 2).
 
 ### Backends
 
@@ -77,9 +77,12 @@ P3_E2E_URL=http://127.0.0.1:8765 pytest -q -m e2e      # PowerShell: $env:P3_E2E
 ## 🔒 Seguridad
 
 - Los símbolos se validan por formato **y** contra la lista de `/tickers` antes de armar la URL: nada que escriba el usuario llega a una ruta sin pasar por esa lista cerrada.
-- Pregunta limitada a 500 caracteres; respuestas de P3 limitadas a 2 MB; sin seguir redirecciones (la clave no viaja a otro host).
+- Pregunta limitada a 500 caracteres; el cuerpo de las respuestas de P3 (también el de los errores) se lee en streaming y se aborta al superar 2 MB, o antes si `Content-Length` ya lo declara; sin seguir redirecciones (la clave no viaja a otro host).
 - `P3_API_KEY` solo se envía como cabecera `X-API-Key` si está definida; no aparece en logs ni en `repr`.
-- El texto que devuelven la API o el LLM es **dato**: se sanea (sin caracteres de control, largo acotado) y nunca se ejecuta ni se usa para armar llamadas.
+- **Plazo total:** además del timeout por operación, toda consulta a P3 (reintentos incluidos) tiene un plazo total (`P3_TOTAL_TIMEOUT`). Se comprueba tras cada trozo recibido y antes de cada reintento, así que una respuesta «goteante» se corta con un error controlado; en el peor caso puede sobrepasarse por un timeout de lectura (`P3_TIMEOUT`), porque no se interrumpe una lectura ya bloqueada.
+- **El texto de la API es dato:** los campos de texto se sanean con `clean()` (sin caracteres de control C0/C1 —incluido ESC—, separadores de línea Unicode ni marcas bidireccionales; largo acotado) y los numéricos (`rank`, `n_days`, `horizon_days`) solo se muestran si son enteros (si no, `n/d`). Esto incluye `code`, `message` y `request_id` de los errores.
+- **La salida del LLM también es dato:** se eliminan las secuencias ANSI/CSI/OSC y los caracteres de control (se conservan los saltos de línea) y se limita a 4000 caracteres. No se interpreta ni se usa para llamar herramientas.
+- **Logs:** una línea por registro, sin saltos de línea ni ESC, y sin tracebacks (solo el tipo de excepción).
 - Los errores se resumen en un mensaje claro; el stack trace nunca llega al usuario.
 
 ## ⚠️ Límites y resultados honestos
